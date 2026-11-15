@@ -323,7 +323,7 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
    * @param value The value to assign to the field.
    * @return `true` for success.
    */
-  public static function setClassObjectField(o:Dynamic, field:String, value:Dynamic):Bool
+  public static function setClassObjectField(o:Dynamic, field:String, value:Dynamic, bypassAccessor:Bool = false):Bool
   {
     if (Util.getTypeNameOf(o) == "Object") {
       Reflect.setProperty(o, field, value);
@@ -347,7 +347,8 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
       var fields = retrieveClassFields(o);
       if (fields.contains(field) || fields.contains('set_$field'))
       {
-        Reflect.setProperty(o, field, value);
+        if (bypassAccessor) Reflect.setField(o, field, value);
+        else Reflect.setProperty(o, field, value);
         return true;
       }
     } else {
@@ -355,7 +356,8 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
       var fields = retrieveClassObjectFields(o);
       if (fields.contains(field) || fields.contains('set_$field'))
       {
-        Reflect.setProperty(o, field, value);
+        if (bypassAccessor) Reflect.setField(o, field, value);
+        else Reflect.setProperty(o, field, value);
         return true;
       }
     }
