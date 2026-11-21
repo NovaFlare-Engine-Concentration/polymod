@@ -32,6 +32,21 @@ class Printer
   var buf:StringBuf;
   var tabs:String;
 
+  /**
+   * Same as `exprToString`, but without the need to create a Printer.
+   * @param e The AST node to convert.
+   * @return String
+   */
+  public static function toString(e:Expr):String
+  {
+    return new Printer().exprToString(e);
+  }
+
+  public static function printType(e:CType):String
+  {
+    return new Printer().typeToString(e);
+  }
+
   public function new() {}
 
   /**
@@ -639,6 +654,8 @@ class Printer
             output += "static ";
           case ADynamic:
             output += "dynamic ";
+          case AFinal:
+            output += "final ";
           case AMacro:
             output += "macro ";
         }
@@ -708,16 +725,6 @@ class Printer
   }
 
   /**
-   * Same as `exprToString`, but without the need to create a Printer.
-   * @param e The AST node to convert.
-   * @return String
-   */
-  public static function toString(e:Expr):String
-  {
-    return new Printer().exprToString(e);
-  }
-
-  /**
    * Converts an `Error` object into a human-readable `String` representation.
    * @param e The error to convert.
    * @param includePosInfo Prepends the origin and line position number, only works if `hscriptPos` is defined.
@@ -766,6 +773,8 @@ class Printer
       case EInvalidInterfaceAccessor(access): 'Interface fields cannot have "$access" modifier';
       case EConflictingAccessModifier(access): 'Conflicting access modifier "$access"';
       case EInvalidVariableAccessor(access): 'Invalid modifier: "$access" on variable';
+      case EInvalidStaticLocalInit(name, reason): 'Cannot initialize static variable "${name}": $reason';
+      case EInvalidConstructorCall(clsName): 'Invalid constructor call, use "new ${clsName}()" instead';
       case ECustom(msg): msg;
     };
     #if hscriptPos

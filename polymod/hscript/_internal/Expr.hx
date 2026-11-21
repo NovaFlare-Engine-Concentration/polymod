@@ -48,8 +48,8 @@ enum Expr
 {
   EConst(c:Const);
   EIdent(v:String);
-  EVar(n:String, ?t:CType, ?e:Expr);
-  EFinal(n:String, ?t:CType, ?e:Expr);
+  EVar(n:String, ?t:CType, ?e:Expr, ?s:Bool);
+  EFinal(n:String, ?t:CType, ?e:Expr, ?s:Bool);
   EParent(e:Expr);
   EBlock(e:Array<Expr>);
   EField(e:Expr, f:String);
@@ -191,6 +191,8 @@ enum Error
   EInvalidInterfaceAccessor(access:String);
   EConflictingAccessModifier(access:String);
   EInvalidVariableAccessor(access:String);
+  EInvalidStaticLocalInit(name:String, reason:String);
+  EInvalidConstructorCall(clsName:String);
   // Fallback error type.
   ECustom(msg:String);
 }
@@ -245,6 +247,11 @@ typedef ClassDecl =
    * Whether the class was declared with the `extern` keyword
    */
   var isExtern:Bool;
+
+  /**
+    If `true` the class is final and cannot be extended.
+  **/
+  var isFinal:Bool;
 
   /**
    * The package that the scripted class belongs to
@@ -328,6 +335,11 @@ typedef ClassImport =
    * Whether this import is a wildcard and we need to validate it for later.
    */
   var ?wildcard:Bool;
+
+  /*
+  * Whether this import is a default import (used for precedence and overriding rules)
+  */
+  var ?isDefault:Bool;
 }
 
 typedef EnumDecl =
@@ -346,7 +358,8 @@ typedef EnumFieldDecl =
 typedef EnumArgDecl =
 {
   var name:String;
-  var type:Null<CType>;
+  var ?type:CType;
+  var ?opt:Bool;
 }
 
 typedef TypeDecl =
@@ -377,6 +390,7 @@ typedef InterfaceDecl =
   var extend:Array<CType>;
   var fields:Array<FieldDecl>;
   var isExtern:Bool;
+  var isFinal:Bool;
 
   /**
    * The package the interface belongs to
@@ -400,6 +414,7 @@ enum FieldAccess
   AOverride;
   AStatic;
   ADynamic;
+  AFinal;
   AMacro;
 }
 
@@ -415,6 +430,7 @@ typedef FunctionDecl =
   var expr:Expr;
   var ret:Null<CType>;
   var isdynamic:Null<Bool>;
+  var isfinal:Null<Bool>;
 }
 
 typedef VarDecl =

@@ -3,6 +3,7 @@
 name: Build Samples
 
 on:
+  push:
   pull_request:
   workflow_dispatch:
 concurrency:
@@ -32,8 +33,10 @@ jobs:
         id: haxelibs-cache
         uses: actions/cache@v6
         with:
-          path: ./samples/.haxelib
-          key: haxelib-${{ hashFiles('samples/*/hmm.json') }}
+          path: |
+            ./samples/.haxelib
+            ./tests/.haxelib
+          key: haxelib-${{ hashFiles('samples/*/hmm.json', 'tests/hmm.json') }}
           enableCrossOsArchive: true
           restore-keys: |
             haxelib-
@@ -53,10 +56,23 @@ jobs:
         run: |
           hmm install --quiet
 
+      - name: Setup hmm-rs
+        run: cargo install hmm-rs --version 0.1.8 --locked
+
+      # Runs even on a cache hit: hmm-rs only installs what's missing or outdated,
+      # which also repoints the cached Polymod dev path at this checkout.
+      - name: Install HScript test dependencies
+        working-directory: ./tests
+        run: hmm-rs install
+
       - name: Set up Polymod as dev haxelib
         if: steps.haxelibs-cache.outputs.cache-hit == 'true'
         working-directory: ./samples
         run: haxelib dev polymod ..
+
+      - name: Run HScript tests
+        if: matrix.os == 'ubuntu-latest' && matrix.target == 'hl'
+        run: bash test.sh
 
       - name: Build Flixel Sample
         working-directory: ./samples/flixel
@@ -93,5 +109,3 @@ jobs:
       - name: Build OpenFL (HScript with Classes) Sample
         working-directory: ./samples/openfl_hscript_class
         run: haxelib run openfl build ${{ matrix.target }} --no-output
-
-

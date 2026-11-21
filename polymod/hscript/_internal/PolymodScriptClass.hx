@@ -11,6 +11,7 @@ import polymod.hscript._internal.Expr.FunctionDecl;
 import polymod.hscript._internal.Expr.VarDecl;
 import polymod.hscript._internal.Printer;
 import polymod.util.Util;
+import polymod.util.ThreadSafety.SafeMap;
 
 using Lambda;
 using StringTools;
@@ -41,10 +42,23 @@ class PolymodScriptClass
    */
   public static final importOverrides:Map<String, Class<Dynamic>> = new Map<String, Class<Dynamic>>();
 
+  #if POLYMOD_WHITE_LIST
+  /**
+   * only explicitly whitelisted import paths are allowed.
+   * Array containing whitelisted import paths.
+   */
+  public static final importWhitelist:Array<String> = [];
+  #end
+
   /**
    * Provide a class name along with a corresponding class to import it in every scripted class.
    */
   public static final defaultImports:Map<String, Class<Dynamic>> = new Map<String, Class<Dynamic>>();
+
+  /**
+   * Provide a class name along with a corresponding class to use as a static extension in every scripted class.
+   */
+  public static final defaultUsings:Map<String, Class<Dynamic>> = new Map<String, Class<Dynamic>>();
 
   /**
    * Provides a list of full class paths that have since been changed from the given version number key.
@@ -100,7 +114,7 @@ class PolymodScriptClass
   /**
    * Class name to every blacklisted instance field it has, inherited ones included.
    */
-  static var resolvedInstanceFields:Map<String, Array<String>> = new Map<String, Array<String>>();
+  static var resolvedInstanceFields:SafeMap<Array<String>> = new SafeMap<Array<String>>();
 
   /**
    * Throw away everything derived from the blacklists. Call after changing one.
@@ -436,7 +450,7 @@ class PolymodScriptClass
         // Append any interfaces from within superclasses.
         if (decl.extend != null)
         {
-          var extendClsName:String = new Printer().typeToString(decl.extend);
+          var extendClsName:String = Printer.printType(decl.extend);
           var fullClsName:String = decl.imports.get(extendClsName)?.fullPath ?? extendClsName;
 
           var clsInterfaces:Array<String> = _classesExtendingInterfaces.get(fullClsName) ?? [];
@@ -445,7 +459,7 @@ class PolymodScriptClass
 
         for (extend in decl.implement)
         {
-          var extendName:String = new Printer().typeToString(extend);
+          var extendName:String = Printer.printType(extend);
           if (extendName.indexOf('<') != -1)
             extendName = extendName.split('<')[0];
 
@@ -649,7 +663,7 @@ class PolymodScriptClass
     }
 
     // Get the super class name.
-    var fullSuperClsName = new Printer().typeToString(classDecl.extend);
+    var fullSuperClsName = Printer.printType(classDecl.extend);
     var baseSuperClsName = switch (classDecl.extend)
     {
       case CTPath(pth, params):
@@ -680,7 +694,7 @@ class PolymodScriptClass
           // importedClass was defined but `cls` was null. This class must have been blacklisted.
           var clsName = classDecl.pkg != null ? '${classDecl.pkg.join('.')}.${classDecl.name}' : classDecl.name;
           Polymod.error(SCRIPT_PARSE_FAILED,
-            'Could not parse superclass "${classDecl.name}" of scripted class "${clsName}". The superclass may be blacklisted.', SCRIPT_RUNTIME);
+            'Could not parse superclass "${baseSuperClsName}" of scripted class "${clsName}". The superclass may be blacklisted.', SCRIPT_RUNTIME);
           return [];
         }
         else if (importedClass != null)
@@ -691,7 +705,17 @@ class PolymodScriptClass
       else
       {
         // Try to resolve superCls class throught the path
-        superCls = importOverrides.get(fullSuperClsName) ?? typedefs.get(fullSuperClsName) ?? Type.resolveClass(fullSuperClsName);
+        var resolvedClass = importOverrides.get(fullSuperClsName) ?? typedefs.get(fullSuperClsName) ?? Type.resolveClass(fullSuperClsName);
+
+        var resolvedClassName = resolvedClass != null ? Type.getClassName(resolvedClass) : '';
+        
+        if (#if POLYMOD_WHITE_LIST (#if POLYMOD_CPPIA PolymodCppiaClassReference.hasCppiaClass(resolvedClassName) || #end
+          !importWhitelist.contains(resolvedClassName)) || #end (importOverrides.exists(resolvedClassName) && importOverrides.get(resolvedClassName) == null))
+        {
+          resolvedClass = null;
+        }
+
+        superCls = resolvedClass;
       }
 
       // Check if the superclass was resolved.
@@ -724,9 +748,9 @@ class PolymodScriptClass
     }
   }
 
-  public static function callScriptClassStaticFunction(clsName:String, funcName:String, args:Array<Dynamic> = null):Dynamic
+  public static function callScriptClassStaticFunction(clsName:String, funcName:String, args:Array<Dynamic> = null, rethrow:Bool = false):Dynamic
   {
-    return scriptInterp.callScriptClassStaticFunction(clsName, funcName, args);
+    return scriptInterp.callScriptClassStaticFunction(clsName, funcName, args, rethrow);
   }
 
   public static function hasScriptClassStaticField(clsName:String, funcName:String):Bool
@@ -739,14 +763,14 @@ class PolymodScriptClass
     return scriptInterp.hasScriptClassStaticFunction(clsName, funcName);
   }
 
-  public static function getScriptClassStaticField(clsName:String, fieldName:String):Dynamic
+  public static function getScriptClassStaticField(clsName:String, fieldName:String, bypassAccessor:Bool = false):Dynamic
   {
-    return scriptInterp.getScriptClassStaticField(clsName, fieldName);
+    return scriptInterp.getScriptClassStaticField(clsName, fieldName, bypassAccessor);
   }
 
-  public static function setScriptClassStaticField(clsName:String, fieldName:String, fieldValue:Dynamic):Dynamic
+  public static function setScriptClassStaticField(clsName:String, fieldName:String, fieldValue:Dynamic, bypassAccessor:Bool = false):Dynamic
   {
-    return scriptInterp.setScriptClassStaticField(clsName, fieldName, fieldValue);
+    return scriptInterp.setScriptClassStaticField(clsName, fieldName, fieldValue, bypassAccessor);
   }
 
   public static function reloadPersistentStaticFields():Void
@@ -917,10 +941,16 @@ class PolymodScriptClass
         {
           // Try to resolve the target class throught the path
           targetClass = importOverrides.get(clsPath) ?? typedefs.get(clsPath) ?? Type.resolveClass(clsPath);
+          var targetClassName = targetClass != null ? Type.getClassName(targetClass) : '';
           if (targetClass == null || interfaceImpls.exists(clsPath))
           {
             targetClass = null;
             Polymod.error(SCRIPT_PARSE_FAILED, 'Could not determine target class for "${pth.join('.')}" (unregistered type?)', SCRIPT_RUNTIME);
+          }
+          else if (#if POLYMOD_WHITE_LIST !importWhitelist.contains(targetClassName) || #end (importOverrides.exists(targetClassName) && importOverrides.get(targetClassName) == null))
+          {
+            targetClass = null;
+            Polymod.error(SCRIPT_PARSE_FAILED, 'Could not determine target class for "${pth.join('.')}" (blacklisted type?)', SCRIPT_RUNTIME);
           }
         }
       default:
@@ -1016,7 +1046,7 @@ class PolymodScriptClass
   {
     args ??= [];
 
-    var fullExtendString = new Printer().typeToString(_c.extend);
+    var fullExtendString = Printer.printType(_c.extend);
 
     // Build an unqualified path too.
     var fullExtendPath:String = _c.imports.get(fullExtendString)?.fullPath ?? fullExtendString;
@@ -1086,6 +1116,7 @@ class PolymodScriptClass
 
   private function validateClassFields():Void
   {
+    if (superClass == null) return;
     for (f in _c.fields)
     {
       switch (f.kind)
@@ -1165,6 +1196,12 @@ class PolymodScriptClass
             }
           }
           #end
+
+          if (func != null && (func.isfinal || PolymodFinalMacro.getFinalsOf(superClass).contains(f.name)))
+          {
+            throw 'Cannot override final function "${f.name}" from superclass.';
+          }
+
         default:
       }
     }
@@ -1197,16 +1234,9 @@ class PolymodScriptClass
       var r:Dynamic = null;
       try
       {
-        if(fn.isdynamic)
+        if (fn.isdynamic && _interp.functions.exists(fnName))
         {
-          if(_interp.functions.exists(fnName))
-          {
-            r = Reflect.callMethod(this, _interp.functions.get(fnName), args);
-          }
-          else
-          {
-            r = _interp.executeFunction(fn, fnName, args);
-          }
+          r = Reflect.callMethod(this, _interp.functions.get(fnName), args);
         }
         else
         {
@@ -1219,6 +1249,17 @@ class PolymodScriptClass
         // A script error occurred while executing the script function.
         // Purge the function from the cache so it is not called again.
         purgeFunction(fnName);
+      }
+      catch (error)
+      {
+        var callStack:String = polymod.util.Util.fetchCallStack();
+
+        Polymod.error(
+          SCRIPT_RUNTIME_EXCEPTION,
+          'An uncaught exception was thrown while calling scripted instance function "$fullyQualifiedName#$fnName()":\n$error\n$callStack',
+          SCRIPT_RUNTIME
+        );
+        return null;
       }
 
       return r;
@@ -1329,6 +1370,14 @@ class PolymodScriptClass
   public var superClass:Dynamic = null;
   public var topASC(default, null):Null<PolymodAbstractScriptClass>;
 
+  public var inBypassAccessor:Bool = false;
+
+  /**
+   * whether only the scripted fields should be taken into account.
+   * This prevents an infinite recursion on the Reflect side.
+   */
+  public var scriptOnly:Bool = false;
+
   public var fullyQualifiedName(get, null):String;
 
   private inline function get_fullyQualifiedName():String
@@ -1343,10 +1392,10 @@ class PolymodScriptClass
     _interfacesList = new Map<String, PolymodStaticInterfaceReference>();
     for (implement in _c.implement)
     {
-      var extendName:String = new Printer().typeToString(implement);
+      var extendName:String = Printer.printType(implement);
       if (extendName.indexOf('<') != -1)
         extendName = extendName.split('<')[0];
-      
+
       var interfacePath:String = _c.imports.get(extendName)?.fullPath ?? extendName;
 
       // Attempt to resolve the interface.
@@ -1579,11 +1628,6 @@ class PolymodScriptClass
 
     for (f in _c.fields)
     {
-      if (_cachedFieldDecls.exists(f.name))
-      {
-        throw 'Duplicate field name "${f.name}" in class "${_c.name}"';
-      }
-
       _cachedFieldDecls.set(f.name, f);
       switch (f.kind)
       {
@@ -1659,7 +1703,7 @@ class PolymodScriptClass
     {
       if (m.name == ':using')
       {
-        var clsMetaName:String = new Printer().exprToString(m.params[0]);
+        var clsMetaName:String = Printer.toString(m.params[0]);
         var cls:String = clsDecl.imports.get(clsMetaName)?.fullPath ?? clsMetaName;
 
         for (field => func in buildUsingListCache(cls) ?? [])
@@ -1706,7 +1750,7 @@ class PolymodScriptClass
         {
           return Reflect.callMethod(cls, field, params);
         }
-        usingMap.set(field, func);
+        usingMap.set(clsField, func);
       }
       return usingMap;
     }

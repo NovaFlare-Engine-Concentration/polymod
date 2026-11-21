@@ -43,18 +43,39 @@ class PolymodCppiaClassReference extends PolymodStaticClassReference
   }
 
   /**
-   * The version a cppia must be stamped with to be accepted.
+   * The semver range a cppia stamp must satisfy to be accepted, like ">=0.9.0 <=0.9.3". Null accepts anything.
    */
-  public static var expectedVersion:Null<String> = null;
+  public static var acceptedVersions:Null<thx.semver.VersionRule> = null;
 
-  static var reportedMismatch:Bool = false;
+  /**
+   * Prefix of the stamp string the manifest carries.
+   */
+  public static final STAMP_PREFIX:String = 'polymod-cppia-stamp:';
+
+  static function versionAccepted(stamp:String):Bool
+  {
+    if (acceptedVersions == null) return true;
+    try
+    {
+      var version:thx.semver.Version = stamp;
+      return version.satisfies(acceptedVersions);
+    }
+    catch (e:Dynamic)
+    {
+      return false;
+    }
+  }
+
+  static function reportVersionMismatch(path:String, stamp:String):Void
+  {
+    trace('[cppia] compiled script "$path" is stamped with $stamp, which does not satisfy the accepted range $acceptedVersions. The script will try to load, but might not work properly.');
+  }
 
   public static function clearCppiaClasses():Void
   {
     // Only the active registry is dropped. What was loaded stays known, because it cannot be undone.
     registry.clear();
     Interp.registryStamp++;
-    reportedMismatch = false;
   }
 
   /**
@@ -163,6 +184,16 @@ class PolymodCppiaClassReference extends PolymodStaticClassReference
   }
 
   /**
+   * The path a compiled script was loaded from, if it is still loaded.
+   */
+  public static function pathOfCppiaClass(clsName:String):Null<String>
+  {
+    for (path => loaded in loadedModules)
+      if (loaded.names.contains(clsName)) return path;
+    return null;
+  }
+
+  /**
    * A cppia class is a real class, so we can check its superclasses to see if it extends the given class path.
    */
   public static function listCppiaClassesExtending(clsPath:String):Array<String>
@@ -262,6 +293,24 @@ class PolymodCppiaClassReference extends PolymodStaticClassReference
 
     for (type in types)
     {
+      #if POLYMOD_WHITE_LIST
+      var isWhitelisted = false;
+      for (whitelistedPath in PolymodScriptClass.importWhitelist)
+      {
+        if (type == whitelistedPath)
+        {
+          isWhitelisted = true;
+          break;
+        }
+      }
+
+      if (!isWhitelisted && type.indexOf('.') != -1 && type.indexOf('haxe.lang') != 0 && Type.resolveClass(type) != null && !hasCppiaClass(type))
+      {
+        if (!found.contains(type)) found.push(type);
+        continue;
+      }
+      #end
+
       var name:Null<String> = deniedNameFor(type, denied);
       if (name != null && !found.contains(name)) found.push(name);
     }
@@ -599,6 +648,24 @@ class PolymodCppiaClassReference extends PolymodStaticClassReference
       return [];
     }
 
+    var earlyStamp:Null<String> = null;
+    for (s in scan.strings)
+    {
+      if (!StringTools.startsWith(s, STAMP_PREFIX)) continue;
+      earlyStamp = s.substr(STAMP_PREFIX.length);
+      break;
+    }
+
+    if (earlyStamp != null && !versionAccepted(earlyStamp)) reportVersionMismatch(path, earlyStamp);
+
+    for (s in scan.strings)
+    {
+      if (!polymod.patch.Patches.isHiddenField(s)) continue;
+      Polymod.error(SCRIPT_PARSE_FAILED, 'Compiled script "$path" reaches the patch hook "$s" directly, use polymod.patch.Patches instead. It will not be loaded.',
+        SCRIPT_RUNTIME);
+      return [];
+    }
+
     var module:cpp.cppia.Module = null;
 
     trace('[cppia] reading "$path" (${data.length} bytes)...');
@@ -665,17 +732,11 @@ class PolymodCppiaClassReference extends PolymodStaticClassReference
       return [];
     }
 
-    var stamp:String = Std.string(Reflect.field(manifest, 'gameVersion'));
-    if (expectedVersion != null && stamp != expectedVersion)
+    // Scripts built before the early stamp existed only carry gameVersion.
+    if (earlyStamp == null)
     {
-      if (!reportedMismatch)
-      {
-        reportedMismatch = true;
-        Polymod.error(SCRIPT_PARSE_FAILED,
-          'Compiled script "$path" was built for game version "$stamp" but this game is "$expectedVersion". It will not be loaded, so the mod needs rebuilding.',
-          SCRIPT_RUNTIME);
-      }
-      return [];
+      var stamp:String = Std.string(Reflect.field(manifest, 'gameVersion'));
+      if (!versionAccepted(stamp)) reportVersionMismatch(path, stamp);
     }
 
     var declared:Array<Class<Dynamic>> = cast Reflect.field(manifest, 'classRefs');
@@ -819,7 +880,7 @@ class PolymodCppiaClassReference extends PolymodStaticClassReference
     }
   }
 
-  override public function getField(fieldName:String):Dynamic
+  override public function getField(fieldName:String, bypassAccessor:Bool = false):Dynamic
   {
     if (cppiaClass == null)
     {
@@ -836,7 +897,7 @@ class PolymodCppiaClassReference extends PolymodStaticClassReference
     return Reflect.field(cppiaClass, fieldName);
   }
 
-  override public function setField(fieldName:String, fieldValue:Dynamic):Dynamic
+  override public function setField(fieldName:String, fieldValue:Dynamic, bypassAccessor:Bool = false):Dynamic
   {
     if (cppiaClass == null)
     {

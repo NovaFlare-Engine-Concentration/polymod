@@ -11,7 +11,7 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
 {
   static final fieldsCache:ObjectMap<Dynamic, Array<String>> = new ObjectMap();
 
-  private function resolveField(name:String):Dynamic
+  private function resolveField(name:String, bypassAccessor:Bool = false, onlyCheckScripts:Bool = false):Dynamic
   {
     switch (name)
     {
@@ -35,7 +35,7 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
           @:privateAccess
           switch (v.get)
           {
-            case "get":
+            case "get" if (!bypassAccessor):
               final getName = 'get_$name';
               if (!this._interp._propTrack.exists(getName))
               {
@@ -83,7 +83,7 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
         {
           return this._interp.error(EInvalidAccess(name));
         }
-        else if (Type.getClass(this.superClass) == null)
+        else if (Type.getClass(this.superClass) == null && !onlyCheckScripts)
         {
           // Anonymous structure
           if (Reflect.hasField(this.superClass, name))
@@ -101,16 +101,18 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
           var superScriptClass:PolymodAbstractScriptClass = cast(this.superClass, PolymodScriptClass);
           try
           {
+            superScriptClass.inBypassAccessor = bypassAccessor;
+            superScriptClass.scriptOnly = onlyCheckScripts;
             return superScriptClass.fieldRead(name);
           }
           catch (e:Dynamic) {}
         }
-        else
+        else if (!onlyCheckScripts)
         {
           // Class object
           try
           {
-            return getClassObjectField(this.superClass, name);
+            return getClassObjectField(this.superClass, name, bypassAccessor);
           }
           catch (e:String)
           {
@@ -119,20 +121,18 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
         }
     }
 
-    if (this.superClass == null)
-    {
-      throw "field '" + name + "' does not exist in script class '" + this.fullyQualifiedName + "'";
-    }
-    else
-    {
-      throw "field '" + name + "' does not exist in script class '" + this.fullyQualifiedName + "' or super class '"
-        + Type.getClassName(Type.getClass(this.superClass)) + "'";
-    }
+    throw 'field "$name" does not exist in script class "${this.fullyQualifiedName}"${this.superClass == null ? '' : ' or super class "${Type.getClassName(Type.getClass(this.superClass))}"'}';
   }
 
   @:op(a.b) public function fieldRead(name:String):Dynamic
   {
-    return resolveField(name);
+    var bypassAccessor = this.inBypassAccessor;
+    this.inBypassAccessor = false;
+
+    var onlyCheckScripts:Bool = this.scriptOnly;
+    this.scriptOnly = false;
+
+    return resolveField(name, bypassAccessor, onlyCheckScripts);
   }
 
   public function fieldExists(name:String):Bool
@@ -141,6 +141,8 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
     if (KNOWN_FIELDS.contains(name)) return true;
 
     // Check the script.
+    var onlyCheckScripts:Bool = this.scriptOnly;
+    this.scriptOnly = false;
 
     if (this.findFunction(name) != null) return true;
     if (this.findVar(name) != null) return true;
@@ -150,7 +152,7 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
     if (this.superClass == null) return false;
 
     // Anonymous structure
-    if (Type.getClass(this.superClass) == null)
+    if (Type.getClass(this.superClass) == null && !onlyCheckScripts)
     {
       return Reflect.hasField(this.superClass, name);
     }
@@ -160,17 +162,24 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
     {
       var superScriptClass:PolymodAbstractScriptClass = cast(this.superClass, PolymodScriptClass);
       // Yay recursion!
+      superScriptClass.scriptOnly = onlyCheckScripts;
       return superScriptClass.fieldExists(name);
     }
 
     // Script extends a class object, use standard reflection
-    if (hasClassObjectField(this.superClass, name)) return true;
+    if (!onlyCheckScripts && hasClassObjectField(this.superClass, name)) return true;
 
     return false;
   }
 
   @:op(a.b) public function fieldWrite(name:String, value:Dynamic):Null<Dynamic>
   {
+    var bypassAccessor = this.inBypassAccessor;
+    this.inBypassAccessor = false;
+
+    var onlyInScripts:Bool = this.scriptOnly;
+    this.scriptOnly = false;
+
     if (this.findVar(name) != null)
     {
       var decl = this.findVar(name, true);
@@ -182,7 +191,7 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
       @:privateAccess
       switch (decl.set)
       {
-        case "set":
+        case "set" if (!bypassAccessor):
           final setName = 'set_$name';
           if (!this._interp._propTrack.exists(setName))
           {
@@ -234,6 +243,8 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
       var superScriptClass:PolymodAbstractScriptClass = cast(this.superClass, PolymodScriptClass);
       try
       {
+        superScriptClass.inBypassAccessor = bypassAccessor;
+        superScriptClass.scriptOnly = onlyInScripts;
         return superScriptClass.fieldWrite(name, value);
       }
       catch (e:Dynamic) {}
@@ -242,7 +253,7 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
     {
       // Class object
       try {
-        if (setClassObjectField(this.superClass, name, value))
+        if (!onlyInScripts && setClassObjectField(this.superClass, name, value, bypassAccessor))
         {
           return value;
         }
@@ -257,14 +268,7 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
       }
     }
 
-    if (this.superClass == null)
-    {
-      return this._interp.error(EInvalidAccess(name));
-    }
-    else
-    {
-      return this._interp.error(EInvalidAccess(name));
-    }
+    return this._interp.error(EInvalidAccess(name));
 
     trace('fieldWrite() fallthrough???');
     return null;
@@ -304,12 +308,17 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
     return fields;
   }
 
-  static function getClassObjectField(o:Dynamic, field:String):Null<Dynamic>
+  static function getClassObjectField(o:Dynamic, field:String, bypassAccessor:Bool = false):Null<Dynamic>
   {
     if (Util.getTypeNameOf(o) == "Object") return Reflect.getProperty(o, field);
 
     var fields = retrieveClassObjectFields(o);
-    if (fields.contains(field) || fields.contains('get_$field')) return Reflect.getProperty(o, field);
+    if (fields.contains(field) || fields.contains('get_$field'))
+    {
+      if (bypassAccessor) return Reflect.field(o, field);
+      else
+        return Reflect.getProperty(o, field);
+    }
 
     throw 'No such field $field';
   }
@@ -321,6 +330,7 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
    * @param o The object to modify.
    * @param field The name of the field to modify.
    * @param value The value to assign to the field.
+   * @param bypassAccessor Whether to bypass the set function if it exists.
    * @return `true` for success.
    */
   public static function setClassObjectField(o:Dynamic, field:String, value:Dynamic, bypassAccessor:Bool = false):Bool
@@ -348,7 +358,8 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
       if (fields.contains(field) || fields.contains('set_$field'))
       {
         if (bypassAccessor) Reflect.setField(o, field, value);
-        else Reflect.setProperty(o, field, value);
+        else
+          Reflect.setProperty(o, field, value);
         return true;
       }
     } else {
@@ -357,7 +368,8 @@ abstract PolymodAbstractScriptClass(PolymodScriptClass) from PolymodScriptClass
       if (fields.contains(field) || fields.contains('set_$field'))
       {
         if (bypassAccessor) Reflect.setField(o, field, value);
-        else Reflect.setProperty(o, field, value);
+        else
+          Reflect.setProperty(o, field, value);
         return true;
       }
     }
